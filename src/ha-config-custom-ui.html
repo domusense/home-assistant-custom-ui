@@ -8,7 +8,7 @@
         <app-toolbar>
           <paper-icon-button
             icon='mdi:arrow-left'
-            on-tap='_backTapped'
+            on-click='_backHandler'
           ></paper-icon-button>
           <div main-title>Custom UI settings</div>
         </app-toolbar>
@@ -30,7 +30,7 @@
 </dom-module>
 
 <script>
-class HaConfigCustomUi extends Polymer.Element {
+class HaConfigCustomUi extends window.hassMixins.EventsMixin(Polymer.Element) {
   static get is() { return 'ha-config-custom-ui'; }
 
   static get properties() {
@@ -53,8 +53,9 @@ class HaConfigCustomUi extends Polymer.Element {
     window.customUI.setName(name);
   }
 
-  _backTapped() {
+  _backHandler() {
     window.history.back();
+    this.fire('location-changed');
   }
 }
 customElements.define(HaConfigCustomUi.is, HaConfigCustomUi);

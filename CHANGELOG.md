@@ -1,7 +1,17 @@
 ## Changelog
 
-*Note: Update to at least 20180126 required for HA 0.62+*
-*Note: Update to at least 20171227 required for HA 0.61*
+#### 2018-04-29
+*   Add support for `action_name` attribute that can be used to change the displayed action on scene and script cards.
+*   Make confirmable controls protect slider on 2nd line
+
+#### 2018-04-27
+*   Add support for `icon_color` attribute to force-set icon color of any entity.
+
+#### 2018-03-30
+*   Prevent template from being applied twice. Fixes #110
+*   Use new system to display version info.
+*   Fix customui config panel. Fixes #122
+*   Prevent more-info from comming up when touching slider or lock.
 
 #### 2018-02-16
 Bugfixes:

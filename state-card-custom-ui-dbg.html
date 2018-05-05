@@ -116,7 +116,9 @@ window.customUI = window.customUI || {
       }
       const value = window.customUI.computeTemplate(
         template, hass, states, stateObj, attributes,
-        attributes[key], stateObj.state);
+        (stateObj.untemplated_attributes && stateObj.untemplated_attributes[key]) ||
+            attributes[key],
+        stateObj.untemplated_state || stateObj.state);
       // In case of null don't set the value.
       if (value === null) return;
       newAttributes[key] = value;
@@ -142,10 +144,12 @@ window.customUI = window.customUI || {
       if (Object.prototype.hasOwnProperty.call(newAttributes, 'state')) {
         if (newAttributes.state !== null) {
           result.state = String(newAttributes.state);
+          result.untemplated_state = stateObj.state;
         }
       }
       if (Object.prototype.hasOwnProperty.call(newAttributes, '_stateDisplay')) {
         result._stateDisplay = newAttributes._stateDisplay;
+        result.untemplated_stateDisplay = stateObj._stateDisplay;
       }
       window.customUI._setKeep(result, !hasGlobal);
       return result;
@@ -184,6 +188,7 @@ window.customUI = window.customUI || {
       entity_id: stateObj.entity_id,
       state: stateObj.state,
       attributes: Object.assign({}, stateObj.attributes, attributes),
+      untemplated_attributes: stateObj.attributes,
       last_changed: stateObj.last_changed,
     };
   },
@@ -242,6 +247,12 @@ window.customUI = window.customUI || {
     if (devInfo === null) {
       // DOM not ready. Wait 1 second.
       window.setTimeout(window.customUI.showVersion, 1000);
+      return;
+    }
+    if (devInfo.hass && devInfo.hass.config && devInfo.hass.config.core &&
+        devInfo.hass.config.core.version &&
+        devInfo.hass.config.core.version.split('.')[1] > 65) {
+      // 0.66 introduced proper display if customui versions.
       return;
     }
     const about = window.customUI.lightOrShadow(devInfo, '.about');
@@ -341,34 +352,62 @@ window.customUI = window.customUI || {
       'partial-panel-resolver',
       'ha-panel-config']);
     if (!haPanelConfig) {
-      // DOM not ready. Wait 1 second.
-      window.setTimeout(window.customUI.updateConfigPanel, 1000);
+      // DOM not ready. Wait 100ms.
+      window.setTimeout(window.customUI.updateConfigPanel, 100);
       return;
     }
-    const ironPages = window.customUI.lightOrShadow(haPanelConfig, 'iron-pages');
-    if (!ironPages) return;
     const haConfigNavigation = window.customUI.getElementHierarchy(haPanelConfig, [
       'ha-config-dashboard',
       'ha-config-navigation']);
-    if (!haConfigNavigation) return;
-    if (ironPages.lastElementChild.tagName !== 'HA-CONFIG-CUSTOM-UI') {
-      const haConfigCustomUi = document.createElement('ha-config-custom-ui');
-      haConfigCustomUi.isWide = window.customUI.domHost(ironPages).isWide;
-      haConfigCustomUi.setAttribute('page-name', 'customui');
-      ironPages.appendChild(haConfigCustomUi);
-      ironPages.addEventListener('iron-items-changed', () => {
-        if (window.location.pathname.startsWith('/config/customui')) {
-          ironPages.select('customui');
-        }
-      });
+    if (haConfigNavigation) {
+      // HaConfigNavigation started using localize on 21.01.2018
+      if (haConfigNavigation.localize && !haConfigNavigation.cuiPatch) {
+        haConfigNavigation.cuiPatch = true;
+        haConfigNavigation._originalComputeLoaded = haConfigNavigation._computeLoaded;
+        haConfigNavigation._originalComputeCaption = haConfigNavigation._computeCaption;
+        haConfigNavigation._originalComputeDescription = haConfigNavigation._computeDescription;
+        haConfigNavigation._computeLoaded = (hass, page) =>
+          page === 'customui' || haConfigNavigation._originalComputeLoaded(hass, page);
+        haConfigNavigation._computeCaption = (page, localize) =>
+          (page === 'customui' ? 'Custom UI' : haConfigNavigation._originalComputeCaption(page, localize));
+        haConfigNavigation._computeDescription = (page, localize) =>
+          (page === 'customui' ? 'SetUI tweaks' : haConfigNavigation._originalComputeDescription(page, localize));
+      }
+      if (!haConfigNavigation.pages.some(conf => conf === 'customui' || conf.domain === 'customui')) {
+        haConfigNavigation.push('pages', haConfigNavigation.localize ? 'customui' : {
+          domain: 'customui',
+          caption: 'Custom UI',
+          description: 'Set UI tweaks.',
+          loaded: true,
+        });
+      }
     }
-    if (!haConfigNavigation.pages.some(conf => conf.domain === 'customui')) {
-      haConfigNavigation.push('pages', {
-        domain: 'customui',
-        caption: 'Custom UI',
-        description: 'Set UI tweaks.',
-        loaded: true,
-      });
+    const getHaConfigCustomUi = () => {
+      const haConfigCustomUi = document.createElement('ha-config-custom-ui');
+      haConfigCustomUi.isWide = haPanelConfig.isWide;
+      haConfigCustomUi.setAttribute('page-name', 'customui');
+      return haConfigCustomUi;
+    };
+
+    const ironPages = window.customUI.lightOrShadow(haPanelConfig, 'iron-pages');
+    if (ironPages) {
+      if (ironPages.lastElementChild.tagName !== 'HA-CONFIG-CUSTOM-UI') {
+        const haConfigCustomUi = getHaConfigCustomUi();
+        ironPages.appendChild(haConfigCustomUi);
+        ironPages.addEventListener('iron-items-changed', () => {
+          if (window.location.pathname.startsWith('/config/customui')) {
+            ironPages.select('customui');
+          }
+        });
+      }
+    } else {
+      const root = haPanelConfig.shadowRoot || haPanelConfig;
+      if (root.lastElementChild.tagName !== 'HA-CONFIG-CUSTOM-UI') {
+        const haConfigCustomUi = getHaConfigCustomUi();
+        root.appendChild(haConfigCustomUi);
+      }
+      const visible = window.location.pathname.startsWith('/config/customui');
+      root.lastElementChild.style.display = visible ? '' : 'none';
     }
   },
 
@@ -426,6 +465,26 @@ window.customUI = window.customUI || {
     };
   },
 
+  // Allows changing the 'Execute' / 'Activate' text on script/scene cards.
+  installActionName(elementName) {
+    const klass = customElements.get(elementName);
+    if (!klass || !klass.prototype) return;
+    Object.defineProperty(klass.prototype, 'localize', {
+      get() {
+        function customLocalize(v) {
+          if (this.stateObj && this.stateObj.attributes &&
+              this.stateObj.attributes.action_name) {
+            return this.stateObj.attributes.action_name;
+          }
+          return this.__data.localize(v);
+        }
+        return customLocalize;
+      },
+      set() {},
+    });
+  },
+
+  // Allows theming "regular" top badges.
   installHaStateLabelBadge() {
     const haStateLabelBadge = customElements.get('ha-state-label-badge');
     if (!haStateLabelBadge || !haStateLabelBadge.prototype.stateChanged) return;
@@ -445,8 +504,27 @@ window.customUI = window.customUI || {
       }
       this.updateStyles();
       if (this.startInterval) {
-        // Added on 19.1.18
+        // Added on 19.1.2018
         this.startInterval(stateObj);
+      }
+    };
+  },
+
+  installStateBadge() {
+    const stateBadge = customElements.get('state-badge');
+    if (!stateBadge || !stateBadge.prototype.updateIconAppearance) return;
+    const originalUpdateIconAppearance = stateBadge.prototype.updateIconAppearance;
+    // Use named function to preserve 'this'.
+    stateBadge.prototype.updateIconAppearance = function customUpdateIconAppearance(stateObj) {
+      if (stateObj.attributes.icon_color && !stateObj.attributes.entity_picture) {
+        this.style.backgroundImage = '';
+        Object.assign(this.$.icon.style, {
+          display: 'inline',
+          color: stateObj.attributes.icon_color,
+          filter: '',
+        });
+      } else {
+        originalUpdateIconAppearance.call(this, stateObj);
       }
     };
   },
@@ -457,6 +535,9 @@ window.customUI = window.customUI || {
     window.customUI.installPartialCards();
     window.customUI.installStatesHook();
     window.customUI.installHaStateLabelBadge();
+    window.customUI.installStateBadge();
+    window.customUI.installActionName('state-card-scene');
+    window.customUI.installActionName('state-card-script');
   },
 
   init() {
@@ -477,6 +558,14 @@ window.customUI = window.customUI || {
     /* eslint-disable no-console */
     console.log(`Loaded CustomUI ${window.customUI.VERSION}`);
     /* eslint-enable no-console */
+    if (!window.CUSTOM_UI_LIST) {
+      window.CUSTOM_UI_LIST = [];
+    }
+    window.CUSTOM_UI_LIST.push({
+      name: 'CustomUI',
+      version: window.customUI.VERSION,
+      url: 'https://github.com/andrey-git/home-assistant-custom-ui',
+    });
   },
 
   runHooks() {
@@ -515,7 +604,7 @@ window.customUI = window.customUI || {
 };
 </script>
 <script>
-window.customUI.VERSION = '20180216';
+window.customUI.VERSION = '20180429';
 </script>
 <script>
 window.customUI.init();
@@ -526,7 +615,7 @@ window.customUI.init();
     <app-header-layout has-scrolling-region="">
       <app-header slot="header" fixed="">
         <app-toolbar>
-          <paper-icon-button icon="mdi:arrow-left" on-tap="_backTapped"></paper-icon-button>
+          <paper-icon-button icon="mdi:arrow-left" on-click="_backHandler"></paper-icon-button>
           <div main-title="">Custom UI settings</div>
         </app-toolbar>
       </app-header>
@@ -544,7 +633,7 @@ window.customUI.init();
 </dom-module>
 
 <script>
-class HaConfigCustomUi extends Polymer.Element {
+class HaConfigCustomUi extends window.hassMixins.EventsMixin(Polymer.Element) {
   static get is() { return 'ha-config-custom-ui'; }
 
   static get properties() {
@@ -567,8 +656,9 @@ class HaConfigCustomUi extends Polymer.Element {
     window.customUI.setName(name);
   }
 
-  _backTapped() {
+  _backHandler() {
     window.history.back();
+    this.fire('location-changed');
   }
 }
 customElements.define(HaConfigCustomUi.is, HaConfigCustomUi);
@@ -678,6 +768,7 @@ customElements.define(DynamicElement.is, DynamicElement);
         top: 0;
         bottom: 0;
         text-align: right;
+        z-index: 1;  
       }
       #lock {
         margin-top: 8px;
@@ -712,7 +803,7 @@ customElements.define(DynamicElement.is, DynamicElement);
           <div class="control-wrapper">
             <dynamic-element class="flex" state-obj="[[stateObj]]" hass="[[hass]]" element-name="[[controlElement]]"></dynamic-element>
             <template is="dom-if" if="[[isConfirmControls(stateObj)]]">
-              <div id="overlay" on-tap="tapHandler">
+              <div id="overlay" on-click="clickHandler">
                 <template is="dom-if" if="[[stateObj.attributes.confirm_controls_show_lock]]">
                   <iron-icon id="lock" class$="[[controlElement]]" icon="mdi:lock-outline"></iron-icon>
                 </template>
@@ -826,7 +917,7 @@ class DynamicWithExtra extends (StateCardDisplay || Polymer.Element) {
         stateObj.attributes.confirm_controls_show_lock;
   }
 
-  tapHandler(e) {
+  clickHandler(e) {
     this.$$('#overlay').style.pointerEvents = 'none';
     const lock = this.$$('#lock');
     if (lock) {
@@ -1034,7 +1125,7 @@ customElements.define(HaThemedSlider.is, HaThemedSlider);
       </div>
       <template is="dom-if" if="[[showSlider]]" restamp="">
         <div class="horizontal layout flex-auto end-justified second-line">
-          <ha-themed-slider id="slider" max="[[max]]" min="[[min]]" theme="[[stateObj.attributes.slider_theme]]" is-on="[[isOn(stateObj, nameOn)]]" value="{{sliderValue}}" disable-off-when-min="{{disableOffWhenMin}}" on-change="sliderChanged" on-tap="stopPropagation">
+          <ha-themed-slider id="slider" max="[[max]]" min="[[min]]" theme="[[stateObj.attributes.slider_theme]]" is-on="[[isOn(stateObj, nameOn)]]" value="{{sliderValue}}" disable-off-when-min="{{disableOffWhenMin}}" on-change="sliderChanged" on-click="stopPropagation">
           </ha-themed-slider>
           <template is="dom-if" if="[[!breakSlider]]">
             <dynamic-with-extra hass="[[hass]]" state-obj="[[stateObj]]" control-element="[[controlElement]]" in-dialog="[[inDialog]]"></dynamic-with-extra>
